@@ -1,0 +1,86 @@
+language: php
+
+php:
+   - 5.4
+   - 5.5
+   - 5.6
+   - 7.0
+   - 7.1
+   - nightly
+
+#  - hhvm
+
+# faster builds on new travis setup not using sudo
+sudo: false
+
+# build only on master branches
+branches:
+  only:
+    - master
+    - 2.1
+
+
+services:
+  - mysql
+
+# cache vendor dirs
+cache:
+  directories:
+     - vendor
+     - $HOME/.composer/cache
+     - $HOME/.npm
+
+
+install:
+   - |
+      if [[ $TRAVIS_PHP_VERSION != '5.6' && $TRAVIS_PHP_VERSION != hhv* ]]; then
+          # disable xdebug for performance reasons when code coverage is not needed. note: xdebug on hhvm is disabled by default
+          phpenv config-rm xdebug.ini || echo "xdebug is not installed"
+      fi
+    - travis_retry composer self-update && composer --version
+    - travis_retry composer global require "fxp/composer-asset-plugin:^1.2.0" --no-plugins
+    - export PATH="$HOME/.composer/vendor/bin:$PATH"
+    # core framework:
+    - travis_retry composer install --prefer-dist --no-interaction
+    - tests/data/travis/apc-setup.sh
+    - tests/data/travis/memcache-setup.sh
+    - tests/data/travis/imagick-setup.sh
+
+# setup application:
+  - |
+    ./init --env=Development
+    sed -i s/root/travis/ common/config/main-local.php
+    sed -i "s/'cookieValidationKey' => ''/'cookieValidationKey' => 'testkey'/" frontend/config/main.php
+    sed -i "s/'cookieValidationKey' => ''/'cookieValidationKey' => 'testkey'/" backend/config/main.php
+#    cp .env.dist .env
+    sed -i s/yii2-advanced-blog\.dev/localhost:8080/ .env
+
+  - |
+    cd tests/codeception/backend && codecept build
+    cd ../common && codecept build
+    cd ../console && codecept build
+    cd ../frontend && codecept build
+    cd ../../../
+
+before_script:
+  - mysql -e 'CREATE DATABASE `yii2-advanced-blog`;';
+  - php tests/codeception/bin/yii app/setup --interactive=0
+
+ # enable code coverage on PHP 5.6, only one PHP version needs to generate coverage data
+  - |
+      if [ $TRAVIS_PHP_VERSION = '5.6' ]; then
+        PHPUNIT_FLAGS="--coverage-clover=coverage.clover"
+      fi
+
+
+script:
+  - |
+    php -S localhost:8080 > /dev/null 2>&1 &
+    cd tests
+    ./../vendor/bin/codecept run --debug
+
+   # validate composer.json
+  - composer validate --no-check-lock
+  - composer validate --no-check-lock
+  # run PHPUnit
+  - vendor/bin/phpunit --verbose $PHPUNIT_FLAGS --exclude-group mssql,oci,wincache,xcache,zenddata,cubrid
